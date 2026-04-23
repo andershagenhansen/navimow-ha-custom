@@ -15,7 +15,7 @@
  *   center_lon: 12.3456            (optional – dock GPS lon)
  */
 
-const _V = "4"; // increment to bust browser cache
+const _V = "5"; // increment to bust browser cache
 
 const TILES = {
   satellite: {
@@ -241,6 +241,9 @@ class NavimowMapCard extends HTMLElement {
 
     this._map = L.map(mapEl, { center, zoom: this._config.zoom });
     this._applyTiles(L);
+    // Shadow DOM containers report wrong size at init — fix after paint
+    setTimeout(() => this._map && this._map.invalidateSize(), 100);
+    setTimeout(() => this._map && this._map.invalidateSize(), 500);
 
     if (!isNaN(lat) && !isNaN(lng)) {
       this._addStartDot(L, lat, lng);
