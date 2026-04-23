@@ -24,12 +24,15 @@ const TILES = {
     attr: "Tiles &copy; Esri",
     maxNativeZoom: 19,
     maxZoom: 22,
+    crossOrigin: true,
   },
   street: {
-    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-    attr: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    // CARTO — no Referer requirement (OSM blocks shadow-DOM requests)
+    url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+    attr: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
     maxNativeZoom: 19,
     maxZoom: 22,
+    crossOrigin: true,
   },
 };
 
