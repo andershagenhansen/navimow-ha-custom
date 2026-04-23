@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Final
 
-DOMAIN: Final = "navimow"
+DOMAIN: Final = "navimow_custom"
 
 OAUTH2_AUTHORIZE: Final = (
     "https://navimow-h5-fra.willand.com/smartHome/login?channel=homeassistant"
