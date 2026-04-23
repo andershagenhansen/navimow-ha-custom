@@ -11,11 +11,13 @@
  *   title: Navimow                 (optional)
  *   hours_to_show: 2               (optional)
  *   satellite: true                (optional, default true)
- *   center_lat: 55.7664            (optional – dock GPS lat)
- *   center_lon: 12.3456            (optional – dock GPS lon)
+ *   dock_lat: 55.7664              (required for accurate position – GPS lat of the dock)
+ *   dock_lon: 12.3456              (required for accurate position – GPS lon of the dock)
+ *
+ * Find dock coordinates: open maps.google.com, right-click the dock spot → copy the coordinates.
  */
 
-const _V = "5"; // increment to bust browser cache
+const _V = "6"; // increment to bust browser cache
 
 const TILES = {
   satellite: {
@@ -60,6 +62,13 @@ function makeDot(L, color, size = 14) {
   });
 }
 
+// Convert mower local X/Y (metres from dock) to GPS
+function xyToLatLon(x, y, dockLat, dockLon) {
+  const lat = dockLat + y / 111320.0;
+  const lon = dockLon + x / (111320.0 * Math.cos(dockLat * Math.PI / 180));
+  return [lat, lon];
+}
+
 // Derive battery sensor entity from tracker entity
 // device_tracker.navimow_i105_pbv11_location → sensor.navimow_i105_pbv11_battery
 function batteryEntity(trackerEntity) {
@@ -91,8 +100,8 @@ class NavimowMapCard extends HTMLElement {
       zoom: config.zoom ?? 19,
       title: config.title ?? "Navimow",
       hours_to_show: config.hours_to_show ?? 2,
-      center_lat: config.center_lat ?? null,
-      center_lon: config.center_lon ?? null,
+      dock_lat: config.dock_lat ?? config.center_lat ?? null,
+      dock_lon: config.dock_lon ?? config.center_lon ?? null,
     };
     this._isSatellite = config.satellite !== false;
     this._render();
@@ -103,8 +112,21 @@ class NavimowMapCard extends HTMLElement {
     if (!this._initialized) { this._initMap(); return; }
     const state = hass.states[this._config.entity];
     if (!state) return;
-    const lat = parseFloat(state.attributes.latitude);
-    const lng = parseFloat(state.attributes.longitude);
+
+    let lat, lng;
+
+    // If dock position configured + raw posture attributes available → precise conversion
+    const dLat = this._config.dock_lat;
+    const dLon = this._config.dock_lon;
+    const px = parseFloat(state.attributes.posture_x);
+    const py = parseFloat(state.attributes.posture_y);
+    if (dLat != null && dLon != null && !isNaN(px) && !isNaN(py)) {
+      [lat, lng] = xyToLatLon(px, py, dLat, dLon);
+    } else {
+      lat = parseFloat(state.attributes.latitude);
+      lng = parseFloat(state.attributes.longitude);
+    }
+
     if (!isNaN(lat) && !isNaN(lng)) this._updatePosition(lat, lng, state);
     else this._updateStatus(state);
   }
@@ -226,10 +248,10 @@ class NavimowMapCard extends HTMLElement {
     const lat = parseFloat(state?.attributes?.latitude);
     const lng = parseFloat(state?.attributes?.longitude);
 
-    // Center priority: config override → entity position → HA home
+    // Center priority: dock config → entity position → HA home
     let center;
-    if (this._config.center_lat && this._config.center_lon) {
-      center = [this._config.center_lat, this._config.center_lon];
+    if (this._config.dock_lat && this._config.dock_lon) {
+      center = [this._config.dock_lat, this._config.dock_lon];
     } else if (!isNaN(lat) && !isNaN(lng)) {
       center = [lat, lng];
     } else {
@@ -339,8 +361,19 @@ class NavimowMapCard extends HTMLElement {
       const url = `history/period/${start.toISOString()}?filter_entity_id=${this._config.entity}&end_time=${end.toISOString()}&minimal_response=true`;
       const resp = await this._hass.callApi("GET", url);
       if (!resp?.[0]) return;
+      const dLat = this._config.dock_lat;
+      const dLon = this._config.dock_lon;
       const pts = resp[0]
-        .map(s => [parseFloat(s.a?.latitude), parseFloat(s.a?.longitude)])
+        .map(s => {
+          const px = parseFloat(s.a?.posture_x);
+          const py = parseFloat(s.a?.posture_y);
+          if (dLat != null && dLon != null && !isNaN(px) && !isNaN(py)) {
+            return xyToLatLon(px, py, dLat, dLon);
+          }
+          const la = parseFloat(s.a?.latitude);
+          const lo = parseFloat(s.a?.longitude);
+          return [la, lo];
+        })
         .filter(([a, b]) => !isNaN(a) && !isNaN(b));
       if (pts.length < 2) return;
       this._history = [...pts, ...this._history];
@@ -366,6 +399,8 @@ class NavimowMapCard extends HTMLElement {
       title: "Navimow",
       hours_to_show: 2,
       satellite: true,
+      dock_lat: 0,
+      dock_lon: 0,
     };
   }
 }
