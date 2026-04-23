@@ -1,38 +1,46 @@
 /**
- * Navimow Map Card - Custom Lovelace card
- * Shows the Navimow mower's live GPS position on an OpenStreetMap.
+ * Navimow Map Card
+ * - Satellite aerial photo background (ESRI World Imagery, no API key)
+ * - Green dot: start of current session
+ * - Red dot:   current mower position
+ * - Blue line: full path trace
+ * - Toggle button: Satellite ↔ Street map
  *
- * Configuration:
+ * Config:
  *   type: custom:navimow-map-card
- *   entity: device_tracker.navimow_i105_location   (required)
- *   zoom: 18                                        (optional, default 18)
- *   title: "Navimow"                                (optional)
- *   hours_to_show: 2                                (optional, show path history)
+ *   entity: device_tracker.navimow_i105_pbv11_location
+ *   zoom: 18
+ *   title: Navimow
+ *   hours_to_show: 2
+ *   satellite: true
  */
 
 const LEAFLET_CSS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
 const LEAFLET_JS  = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-const OSM_TILE    = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-const OSM_ATTR    = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
-const MOWER_ICON_SVG = `
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="40" height="40">
-  <circle cx="24" cy="24" r="22" fill="#4CAF50" stroke="#fff" stroke-width="3"/>
-  <text x="24" y="31" text-anchor="middle" font-size="22" fill="white">🌿</text>
-</svg>`;
+const TILES = {
+  satellite: {
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attr: "Tiles &copy; Esri",
+    maxNativeZoom: 19,
+    maxZoom: 22,
+  },
+  street: {
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attr: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxNativeZoom: 19,
+    maxZoom: 22,
+  },
+};
 
 let _leafletLoaded = null;
-
 function loadLeaflet() {
   if (_leafletLoaded) return _leafletLoaded;
   _leafletLoaded = new Promise((resolve) => {
     if (window.L) { resolve(window.L); return; }
-
     const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = LEAFLET_CSS;
+    link.rel = "stylesheet"; link.href = LEAFLET_CSS;
     document.head.appendChild(link);
-
     const script = document.createElement("script");
     script.src = LEAFLET_JS;
     script.onload = () => resolve(window.L);
@@ -41,18 +49,35 @@ function loadLeaflet() {
   return _leafletLoaded;
 }
 
+function makeDot(L, color, size = 14) {
+  return L.divIcon({
+    className: "",
+    html: `<div style="
+      width:${size}px;height:${size}px;
+      border-radius:50%;
+      background:${color};
+      border:3px solid #fff;
+      box-shadow:0 0 4px rgba(0,0,0,.6);
+    "></div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
+
 class NavimowMapCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
     this._map = null;
-    this._marker = null;
+    this._startMarker = null;   // green dot — first position
+    this._currentMarker = null; // red dot   — latest position
     this._polyline = null;
-    this._history = [];
+    this._history = [];         // [[lat,lng], ...]
     this._hass = null;
     this._config = {};
     this._initialized = false;
-    this._unsubscribeHistory = null;
+    this._tileLayer = null;
+    this._isSatellite = true;
   }
 
   setConfig(config) {
@@ -63,26 +88,18 @@ class NavimowMapCard extends HTMLElement {
       title: config.title ?? "Navimow",
       hours_to_show: config.hours_to_show ?? 2,
     };
+    this._isSatellite = config.satellite !== false;
     this._render();
   }
 
   set hass(hass) {
-    const prev = this._hass;
     this._hass = hass;
-
-    if (!this._initialized) {
-      this._initMap();
-      return;
-    }
-
+    if (!this._initialized) { this._initMap(); return; }
     const state = hass.states[this._config.entity];
     if (!state) return;
-
     const lat = parseFloat(state.attributes.latitude);
     const lng = parseFloat(state.attributes.longitude);
-    if (isNaN(lat) || isNaN(lng)) return;
-
-    this._updateMarker(lat, lng, state);
+    if (!isNaN(lat) && !isNaN(lng)) this._updatePosition(lat, lng, state);
   }
 
   _render() {
@@ -92,96 +109,100 @@ class NavimowMapCard extends HTMLElement {
         ha-card { overflow: hidden; }
         .card-header {
           padding: 12px 16px 0;
-          font-size: 1.1em;
-          font-weight: 500;
+          font-size: 1.1em; font-weight: 500;
           color: var(--primary-text-color);
-          display: flex;
-          align-items: center;
-          gap: 8px;
+          display: flex; align-items: center; gap: 8px;
         }
-        .card-header .title { flex: 1; }
-        .card-header .status {
-          font-size: 0.8em;
-          font-weight: 400;
+        .title { flex: 1; }
+        .status {
+          font-size: .8em; font-weight: 400;
           color: var(--secondary-text-color);
           background: var(--secondary-background-color);
-          border-radius: 12px;
-          padding: 2px 8px;
+          border-radius: 12px; padding: 2px 8px;
         }
-        #map {
-          width: 100%;
-          height: 350px;
+        .map-wrap { position: relative; }
+        #map { width: 100%; height: 400px; }
+        .toggle-btn {
+          position: absolute; top: 10px; right: 10px; z-index: 1000;
+          background: rgba(255,255,255,.92);
+          border: none; border-radius: 6px;
+          padding: 5px 10px; font-size: 12px; font-weight: 600;
+          cursor: pointer; box-shadow: 0 1px 5px rgba(0,0,0,.4); color: #333;
         }
-        .no-position {
-          height: 80px;
-          display: flex;
+        .toggle-btn:hover { background: #fff; }
+        .legend {
+          display: flex; gap: 14px; padding: 6px 16px 10px;
+          font-size: .8em; color: var(--secondary-text-color);
           align-items: center;
-          justify-content: center;
-          color: var(--secondary-text-color);
-          font-size: 0.9em;
         }
-        /* Leaflet CSS needs to live in light DOM but map renders in shadow DOM.
-           Re-declare the critical Leaflet rules here. */
-        .leaflet-pane, .leaflet-tile, .leaflet-marker-icon,
-        .leaflet-marker-shadow, .leaflet-tile-container,
-        .leaflet-pane > svg, .leaflet-pane > canvas,
-        .leaflet-zoom-box, .leaflet-image-layer,
-        .leaflet-layer { position: absolute; }
-        .leaflet-container { position: relative; overflow: hidden; background: #ddd; }
-        .leaflet-tile { filter: inherit; visibility: hidden; }
-        .leaflet-tile-loaded { visibility: inherit; }
-        .leaflet-zoom-anim .leaflet-zoom-animated { transition: transform 0.25s cubic-bezier(0,0,0.25,1); }
-        .leaflet-pan-anim .leaflet-tile, .leaflet-zoom-anim .leaflet-tile { transition: none; }
-        .leaflet-zoom-anim .leaflet-zoom-animated { will-change: transform; }
-        .leaflet-zoom-anim .leaflet-zoom-hide { visibility: hidden; }
-        .leaflet-overlay-pane svg { -moz-user-select: none; }
-        .leaflet-tile-pane { z-index: 2; }
-        .leaflet-overlay-pane { z-index: 4; }
-        .leaflet-shadow-pane { z-index: 5; }
-        .leaflet-marker-pane { z-index: 6; }
-        .leaflet-tooltip-pane { z-index: 7; }
-        .leaflet-popup-pane { z-index: 8; }
-        .leaflet-map-pane canvas { z-index: 1; }
-        .leaflet-map-pane svg { z-index: 2; }
-        .leaflet-control { position: relative; z-index: 800; pointer-events: visiblePainted; pointer-events: auto; }
-        .leaflet-top, .leaflet-bottom { position: absolute; z-index: 1000; pointer-events: none; }
-        .leaflet-top { top: 0; }
-        .leaflet-right { right: 0; }
-        .leaflet-bottom { bottom: 0; }
-        .leaflet-left { left: 0; }
-        .leaflet-control { float: left; clear: both; }
-        .leaflet-right .leaflet-control { float: right; }
-        .leaflet-top .leaflet-control { margin-top: 10px; }
-        .leaflet-bottom .leaflet-control { margin-bottom: 10px; }
-        .leaflet-left .leaflet-control { margin-left: 10px; }
-        .leaflet-right .leaflet-control { margin-right: 10px; }
-        .leaflet-control-zoom a, .leaflet-control-attribution {
-          background: white; border-radius: 2px; color: #333;
-          font: 11px/1.5 Arial, Helvetica, sans-serif;
-          text-decoration: none;
+        .legend-dot {
+          width: 12px; height: 12px; border-radius: 50%;
+          border: 2px solid #fff;
+          box-shadow: 0 0 3px rgba(0,0,0,.4);
+          display: inline-block;
         }
-        .leaflet-control-zoom { box-shadow: 0 1px 5px rgba(0,0,0,.4); border-radius: 4px; }
-        .leaflet-control-zoom a {
-          width: 26px; height: 26px; line-height: 26px;
-          display: block; text-align: center; font-size: 18px; font-weight: bold;
-          border-bottom: 1px solid #ccc;
+        .no-pos {
+          height: 80px; display: flex;
+          align-items: center; justify-content: center;
+          color: var(--secondary-text-color); font-size: .9em;
         }
-        .leaflet-control-zoom a:last-child { border-bottom: none; }
-        .leaflet-control-zoom a:hover { background: #f4f4f4; }
-        .leaflet-control-attribution { padding: 0 8px; font-size: 11px; }
-        .leaflet-touch .leaflet-control-zoom a { width: 30px; height: 30px; line-height: 30px; }
+        /* Leaflet base styles (shadow DOM copy) */
+        .leaflet-pane,.leaflet-tile,.leaflet-marker-icon,.leaflet-marker-shadow,
+        .leaflet-tile-container,.leaflet-pane>svg,.leaflet-pane>canvas,
+        .leaflet-zoom-box,.leaflet-image-layer,.leaflet-layer{position:absolute}
+        .leaflet-container{position:relative;overflow:hidden;background:#1a1a2e}
+        .leaflet-tile{filter:inherit;visibility:hidden}
+        .leaflet-tile-loaded{visibility:inherit}
+        .leaflet-zoom-anim .leaflet-zoom-animated{transition:transform .25s cubic-bezier(0,0,.25,1)}
+        .leaflet-pan-anim .leaflet-tile,.leaflet-zoom-anim .leaflet-tile{transition:none}
+        .leaflet-zoom-anim .leaflet-zoom-animated{will-change:transform}
+        .leaflet-zoom-anim .leaflet-zoom-hide{visibility:hidden}
+        .leaflet-overlay-pane svg{-moz-user-select:none}
+        .leaflet-tile-pane{z-index:2}.leaflet-overlay-pane{z-index:4}
+        .leaflet-shadow-pane{z-index:5}.leaflet-marker-pane{z-index:6}
+        .leaflet-tooltip-pane{z-index:7}.leaflet-popup-pane{z-index:8}
+        .leaflet-map-pane canvas{z-index:1}.leaflet-map-pane svg{z-index:2}
+        .leaflet-control{position:relative;z-index:800;pointer-events:auto}
+        .leaflet-top,.leaflet-bottom{position:absolute;z-index:1000;pointer-events:none}
+        .leaflet-top{top:0}.leaflet-right{right:0}
+        .leaflet-bottom{bottom:0}.leaflet-left{left:0}
+        .leaflet-control{float:left;clear:both}
+        .leaflet-right .leaflet-control{float:right}
+        .leaflet-top .leaflet-control{margin-top:10px}
+        .leaflet-bottom .leaflet-control{margin-bottom:10px}
+        .leaflet-left .leaflet-control{margin-left:10px}
+        .leaflet-right .leaflet-control{margin-right:10px}
+        .leaflet-control-zoom a,.leaflet-control-attribution{
+          background:#fff;border-radius:2px;color:#333;
+          font:11px/1.5 Arial,Helvetica,sans-serif;text-decoration:none}
+        .leaflet-control-zoom{box-shadow:0 1px 5px rgba(0,0,0,.4);border-radius:4px}
+        .leaflet-control-zoom a{
+          width:26px;height:26px;line-height:26px;
+          display:block;text-align:center;font-size:18px;font-weight:bold;
+          border-bottom:1px solid #ccc}
+        .leaflet-control-zoom a:last-child{border-bottom:none}
+        .leaflet-control-zoom a:hover{background:#f4f4f4}
+        .leaflet-control-attribution{padding:0 8px;font-size:11px}
       </style>
       <ha-card>
         <div class="card-header">
           <span class="title">🌿 ${this._config.title}</span>
-          <span class="status" id="status">Waiting...</span>
+          <span class="status" id="status">—</span>
         </div>
-        <div id="map"></div>
-        <div class="no-position" id="no-pos" style="display:none">
-          No GPS position available yet
+        <div class="map-wrap">
+          <div id="map"></div>
+          <button class="toggle-btn" id="toggle">🗺 Street</button>
         </div>
-      </ha-card>
-    `;
+        <div class="legend">
+          <span class="legend-dot" style="background:#4CAF50"></span> Start
+          <span class="legend-dot" style="background:#f44336"></span> Current
+          <span style="display:inline-block;width:20px;height:3px;background:#2196F3;border-radius:2px;margin-bottom:1px"></span> Path
+        </div>
+        <div class="no-pos" id="no-pos" style="display:none">No position yet</div>
+      </ha-card>`;
+
+    this.shadowRoot.getElementById("toggle")
+      .addEventListener("click", () => this._toggleLayer());
   }
 
   async _initMap() {
@@ -189,7 +210,6 @@ class NavimowMapCard extends HTMLElement {
     this._initialized = true;
 
     const L = await loadLeaflet();
-
     const mapEl = this.shadowRoot.getElementById("map");
     if (!mapEl) return;
 
@@ -198,76 +218,54 @@ class NavimowMapCard extends HTMLElement {
     const lng = parseFloat(state?.attributes?.longitude);
     const center = (isNaN(lat) || isNaN(lng)) ? [56.0, 10.0] : [lat, lng];
 
-    this._map = L.map(mapEl, {
-      center,
-      zoom: this._config.zoom,
-      zoomControl: true,
-      attributionControl: true,
-    });
-
-    L.tileLayer(OSM_TILE, {
-      attribution: OSM_ATTR,
-      maxZoom: 22,
-      maxNativeZoom: 19,
-    }).addTo(this._map);
-
-    // Custom mower icon
-    const icon = L.divIcon({
-      html: MOWER_ICON_SVG,
-      className: "",
-      iconSize: [40, 40],
-      iconAnchor: [20, 20],
-      popupAnchor: [0, -24],
-    });
+    this._map = L.map(mapEl, { center, zoom: this._config.zoom });
+    this._applyTiles(L);
 
     if (!isNaN(lat) && !isNaN(lng)) {
-      this._marker = L.marker([lat, lng], { icon })
-        .addTo(this._map)
-        .bindPopup(this._popupContent(state));
+      this._addStartMarker(L, lat, lng);
+      this._currentMarker = L.marker([lat, lng], { icon: makeDot(L, "#f44336", 16) })
+        .addTo(this._map);
       this._history.push([lat, lng]);
       this._updateStatus(state);
     } else {
-      this.shadowRoot.getElementById("map").style.display = "none";
+      mapEl.style.display = "none";
       this.shadowRoot.getElementById("no-pos").style.display = "flex";
     }
 
-    // Load position history
     this._loadHistory();
   }
 
-  _updateMarker(lat, lng, state) {
-    if (!this._map) return;
+  _addStartMarker(L, lat, lng) {
+    if (this._startMarker) return;
+    this._startMarker = L.marker([lat, lng], { icon: makeDot(L, "#4CAF50", 14) })
+      .bindTooltip("Start", { permanent: false, direction: "top" })
+      .addTo(this._map);
+  }
 
+  _updatePosition(lat, lng, state) {
+    if (!this._map) return;
     const L = window.L;
     if (!L) return;
 
-    // Show map, hide no-pos message
-    const mapEl = this.shadowRoot.getElementById("map");
-    const noPos = this.shadowRoot.getElementById("no-pos");
-    if (mapEl) mapEl.style.display = "";
-    if (noPos) noPos.style.display = "none";
+    this.shadowRoot.getElementById("map").style.display = "";
+    this.shadowRoot.getElementById("no-pos").style.display = "none";
 
     const pos = [lat, lng];
 
-    if (!this._marker) {
-      const icon = L.divIcon({
-        html: MOWER_ICON_SVG,
-        className: "",
-        iconSize: [40, 40],
-        iconAnchor: [20, 20],
-        popupAnchor: [0, -24],
-      });
-      this._marker = L.marker(pos, { icon })
-        .addTo(this._map)
-        .bindPopup(this._popupContent(state));
+    // Place start marker on first fix
+    this._addStartMarker(L, lat, lng);
+
+    // Move / create red current-position dot
+    if (!this._currentMarker) {
+      this._currentMarker = L.marker(pos, { icon: makeDot(L, "#f44336", 16) })
+        .addTo(this._map);
       this._map.setView(pos, this._config.zoom);
     } else {
-      this._marker.setLatLng(pos);
-      this._marker.setPopupContent(this._popupContent(state));
+      this._currentMarker.setLatLng(pos);
       this._map.panTo(pos);
     }
 
-    // Append to path
+    // Grow path
     const last = this._history[this._history.length - 1];
     if (!last || last[0] !== lat || last[1] !== lng) {
       this._history.push(pos);
@@ -275,9 +273,7 @@ class NavimowMapCard extends HTMLElement {
         this._polyline.setLatLngs(this._history);
       } else {
         this._polyline = L.polyline(this._history, {
-          color: "#4CAF50",
-          weight: 3,
-          opacity: 0.7,
+          color: "#2196F3", weight: 3, opacity: 0.85,
         }).addTo(this._map);
       }
     }
@@ -285,82 +281,85 @@ class NavimowMapCard extends HTMLElement {
     this._updateStatus(state);
   }
 
-  _popupContent(state) {
-    if (!state) return "No data";
-    const lat = state.attributes.latitude?.toFixed(6);
-    const lng = state.attributes.longitude?.toFixed(6);
-    const battery = state.attributes.battery ?? "?";
-    const status = state.attributes.status ?? state.state ?? "unknown";
-    return `
-      <b>Navimow</b><br>
-      Status: ${status}<br>
-      Battery: ${battery}%<br>
-      Lat: ${lat}, Lng: ${lng}
-    `;
+  _applyTiles(L) {
+    if (!L) L = window.L;
+    if (!L || !this._map) return;
+    if (this._tileLayer) this._map.removeLayer(this._tileLayer);
+    const t = this._isSatellite ? TILES.satellite : TILES.street;
+    this._tileLayer = L.tileLayer(t.url, {
+      attribution: t.attr,
+      maxNativeZoom: t.maxNativeZoom,
+      maxZoom: t.maxZoom,
+    }).addTo(this._map);
+    const btn = this.shadowRoot.getElementById("toggle");
+    if (btn) btn.textContent = this._isSatellite ? "🗺 Street" : "🛰 Satellite";
+  }
+
+  _toggleLayer() {
+    this._isSatellite = !this._isSatellite;
+    this._applyTiles(window.L);
   }
 
   _updateStatus(state) {
     const el = this.shadowRoot.getElementById("status");
     if (!el || !state) return;
-    const status = state.attributes.status ?? state.state ?? "unknown";
-    const battery = state.attributes.battery;
-    el.textContent = battery != null ? `${status} · 🔋${battery}%` : status;
+    const s = state.attributes.status ?? state.state ?? "unknown";
+    const b = state.attributes.battery;
+    el.textContent = b != null ? `${s} · 🔋${b}%` : s;
   }
 
   async _loadHistory() {
-    if (!this._hass || !window.L) return;
-    const hours = this._config.hours_to_show;
-    if (!hours || hours <= 0) return;
-
+    if (!this._hass || !window.L || !this._config.hours_to_show) return;
     try {
       const end = new Date();
-      const start = new Date(end.getTime() - hours * 3600 * 1000);
-      const entity = this._config.entity;
-      const url = `/api/history/period/${start.toISOString()}?filter_entity_id=${entity}&end_time=${end.toISOString()}&minimal_response=true`;
-      const resp = await this._hass.callApi("GET", url.slice(5)); // strip /api/
-      if (!resp || !resp[0]) return;
+      const start = new Date(end - this._config.hours_to_show * 3600000);
+      const url = `history/period/${start.toISOString()}?filter_entity_id=${this._config.entity}&end_time=${end.toISOString()}&minimal_response=true`;
+      const resp = await this._hass.callApi("GET", url);
+      if (!resp?.[0]) return;
+      const pts = resp[0]
+        .map(s => [parseFloat(s.a?.latitude), parseFloat(s.a?.longitude)])
+        .filter(([a, b]) => !isNaN(a) && !isNaN(b));
+      if (pts.length < 2) return;
 
-      const points = resp[0]
-        .map((s) => [parseFloat(s.a?.latitude), parseFloat(s.a?.longitude)])
-        .filter(([lat, lng]) => !isNaN(lat) && !isNaN(lng));
+      this._history = [...pts, ...this._history];
 
-      if (points.length < 2) return;
+      // Place start marker at oldest history point
+      if (this._startMarker) {
+        this._startMarker.setLatLng(pts[0]);
+      } else {
+        this._addStartMarker(window.L, pts[0][0], pts[0][1]);
+      }
 
-      this._history = [...points, ...this._history];
       if (this._polyline) {
         this._polyline.setLatLngs(this._history);
       } else {
         this._polyline = window.L.polyline(this._history, {
-          color: "#4CAF50",
-          weight: 3,
-          opacity: 0.7,
+          color: "#2196F3", weight: 3, opacity: 0.85,
         }).addTo(this._map);
       }
     } catch (e) {
-      console.debug("Navimow map: could not load history", e);
+      console.debug("Navimow map history error", e);
     }
   }
 
-  getCardSize() {
-    return 5;
-  }
+  getCardSize() { return 6; }
 
   static getStubConfig() {
     return {
-      entity: "device_tracker.navimow_i105_location",
+      entity: "device_tracker.navimow_i105_pbv11_location",
       zoom: 18,
       title: "Navimow",
       hours_to_show: 2,
+      satellite: true,
     };
   }
 }
 
 customElements.define("navimow-map-card", NavimowMapCard);
-
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "navimow-map-card",
   name: "Navimow Map Card",
-  description: "Shows the Navimow mower position on an OpenStreetMap.",
+  description: "Live mower position on satellite imagery with path trace.",
   preview: false,
 });
