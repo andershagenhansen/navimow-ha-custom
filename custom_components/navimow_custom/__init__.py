@@ -160,12 +160,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 device_ids = [getattr(d, "id", None) for d in mqtt.records if d]
                 for device_id in device_ids:
-                    wildcard = f"/downlink/vehicle/{device_id}/realtimeDate/+"
-                    mqtt.client.subscribe(wildcard)
-                    _LOGGER.info("Navimow: subscribed %s", wildcard)
-                mqtt.client.subscribe("/downlink/vehicle/+/realtimeDate/+")
-                mqtt.client.subscribe("/downlink/#")
-                _LOGGER.info("Navimow: subscribed broad downlink wildcard")
+                    for channel in ("location", "state", "event", "attributes"):
+                        topic = f"/downlink/vehicle/{device_id}/realtimeDate/{channel}"
+                        rc, mid = mqtt.client.subscribe(topic)
+                        _LOGGER.info("Navimow: subscribed %s (rc=%s mid=%s)", topic, rc, mid)
 
             async def _on_disconnected() -> None:
                 if _unload_flag[0]:
