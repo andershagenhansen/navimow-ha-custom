@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import DEGREE, PERCENTAGE, UnitOfLength
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -37,6 +37,35 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda coordinator: (
             state.battery if (state := coordinator.get_device_state()) else None
+        ),
+    ),
+    NavimowSensorEntityDescription(
+        key="posture_x",
+        translation_key="posture_x",
+        native_unit_of_measurement=UnitOfLength.METERS,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda coordinator: (
+            loc.get("posture_x") if (loc := coordinator.get_device_location()) else None
+        ),
+    ),
+    NavimowSensorEntityDescription(
+        key="posture_y",
+        translation_key="posture_y",
+        native_unit_of_measurement=UnitOfLength.METERS,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda coordinator: (
+            loc.get("posture_y") if (loc := coordinator.get_device_location()) else None
+        ),
+    ),
+    NavimowSensorEntityDescription(
+        key="posture_theta",
+        translation_key="posture_theta",
+        native_unit_of_measurement=DEGREE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda coordinator: (
+            round(
+                (loc.get("posture_theta", 0) * 180.0 / 3.141592653589793) % 360, 1
+            ) if (loc := coordinator.get_device_location()) else None
         ),
     ),
 )

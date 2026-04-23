@@ -52,6 +52,9 @@ class NavimowDeviceTracker(CoordinatorEntity[NavimowCoordinator], TrackerEntity)
 
     @property
     def latitude(self) -> float | None:
+        loc = self.coordinator.get_device_location()
+        if loc:
+            return loc.get("lat")
         state = self.coordinator.get_device_state()
         if state and state.position:
             return state.position.get("lat")
@@ -59,10 +62,24 @@ class NavimowDeviceTracker(CoordinatorEntity[NavimowCoordinator], TrackerEntity)
 
     @property
     def longitude(self) -> float | None:
+        loc = self.coordinator.get_device_location()
+        if loc:
+            return loc.get("lng")
         state = self.coordinator.get_device_state()
         if state and state.position:
             return state.position.get("lng")
         return None
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        loc = self.coordinator.get_device_location()
+        if not loc:
+            return None
+        return {
+            "posture_x": loc.get("posture_x"),
+            "posture_y": loc.get("posture_y"),
+            "posture_theta": loc.get("posture_theta"),
+        }
 
     @property
     def available(self) -> bool:

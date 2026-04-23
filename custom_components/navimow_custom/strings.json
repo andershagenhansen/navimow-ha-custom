@@ -36,6 +36,15 @@
     "sensor": {
       "battery": {
         "name": "Battery"
+      },
+      "posture_x": {
+        "name": "Position X"
+      },
+      "posture_y": {
+        "name": "Position Y"
+      },
+      "posture_theta": {
+        "name": "Heading"
       }
     },
     "device_tracker": {

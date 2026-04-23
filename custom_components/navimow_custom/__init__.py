@@ -186,8 +186,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if get_coordinators is not None:
                     try:
                         import json as _json
-                        payload_dict = _json.loads(payload_text)
-                        if isinstance(payload_dict, dict):
+                        parsed = _json.loads(payload_text)
+                        # location channel sends a JSON array; unwrap first element
+                        if isinstance(parsed, list):
+                            payload_dict = parsed[0] if parsed and isinstance(parsed[0], dict) else None
+                        elif isinstance(parsed, dict):
+                            payload_dict = parsed
+                        else:
+                            payload_dict = None
+                        if payload_dict is not None:
                             payload_dict.setdefault("device_id", device_id)
                             for coord in get_coordinators().values():
                                 coord.handle_raw_mqtt(topic, payload_dict, device_id)

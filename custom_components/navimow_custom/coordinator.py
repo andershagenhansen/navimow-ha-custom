@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from datetime import timedelta
 from typing import Any
@@ -78,6 +79,31 @@ def _extract_position(payload: dict[str, Any]) -> dict[str, float] | None:
     return None
 
 
+def _extract_local_coords(payload: dict[str, Any]) -> dict[str, float] | None:
+    """Extract postureX/Y/Theta from a location MQTT payload item."""
+    def _f(v: Any) -> float | None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    x = _f(payload.get("postureX"))
+    y = _f(payload.get("postureY"))
+    theta = _f(payload.get("postureTheta"))
+    if x is None or y is None:
+        return None
+    return {"posture_x": x, "posture_y": y, "posture_theta": theta or 0.0}
+
+
+def _xy_to_latlon(
+    posture_x: float, posture_y: float, origin_lat: float, origin_lon: float
+) -> tuple[float, float]:
+    """Convert local X/Y offsets (metres) to GPS lat/lon using HA home as origin."""
+    lat = origin_lat + (posture_y / 111320.0)
+    lon = origin_lon + (posture_x / (111320.0 * math.cos(math.radians(origin_lat))))
+    return lat, lon
+
+
 class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Coordinator for Navimow data updates."""
 
@@ -105,6 +131,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_mqtt_update: float | None = None
         self._last_http_fetch: float | None = None
         self._last_data_source: str | None = None
+        self._last_location: dict[str, float] | None = None
 
     async def async_setup(self) -> None:
         """Register callbacks from SDK."""
@@ -116,6 +143,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "device": self.device,
             "state": self._last_state,
             "attributes": self._last_attributes,
+            "location": self._last_location,
             "meta": {
                 "last_data_source": self._last_data_source,
                 "last_mqtt_update_monotonic": self._last_mqtt_update,
@@ -221,11 +249,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
 
     def handle_raw_mqtt(self, topic: str, payload: dict[str, Any], device_id: str) -> None:
-        """Receive every raw MQTT message for this device.
-
-        Logs the payload at DEBUG so we can discover new field names,
-        and tries every known position field combination to update the tracker.
-        """
+        """Receive every raw MQTT message for this device."""
         if device_id != self.device.id:
             return
 
@@ -235,6 +259,27 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             topic,
             json.dumps(payload, ensure_ascii=False),
         )
+
+        # /realtimeDate/location carries postureX/Y/Theta local coordinates
+        if topic.endswith("/realtimeDate/location"):
+            location = _extract_local_coords(payload)
+            if location:
+                origin_lat = self.hass.config.latitude
+                origin_lon = self.hass.config.longitude
+                lat, lon = _xy_to_latlon(
+                    location["posture_x"], location["posture_y"],
+                    origin_lat, origin_lon,
+                )
+                location["lat"] = lat
+                location["lng"] = lon
+                _LOGGER.debug(
+                    "Navimow location: device=%s x=%.3f y=%.3f theta=%.3f → lat=%.7f lng=%.7f",
+                    device_id,
+                    location["posture_x"], location["posture_y"], location["posture_theta"],
+                    lat, lon,
+                )
+                self.hass.loop.call_soon_threadsafe(self._apply_location, location)
+            return
 
         position = _extract_position(payload)
         if position:
@@ -246,6 +291,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 topic,
             )
             self.hass.loop.call_soon_threadsafe(self._apply_position, position)
+
+    def _apply_location(self, location: dict[str, float]) -> None:
+        """Store local-coordinate location data and push an update."""
+        self._last_location = location
+        self.async_set_updated_data(self._build_data())
 
     def _apply_position(self, position: dict[str, float]) -> None:
         """Apply a newly found position to the current state and push an update."""
@@ -319,6 +369,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def get_device_attributes(self) -> DeviceAttributesMessage | None:
         return self.data.get("attributes")
+
+    def get_device_location(self) -> dict[str, float] | None:
+        """Return latest location dict with lat/lng/posture_x/posture_y/posture_theta."""
+        return self.data.get("location")
 
     def get_device_info(self) -> Any | None:
         return self.data.get("device")
