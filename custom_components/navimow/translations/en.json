@@ -1,0 +1,47 @@
+{
+  "config": {
+    "step": {
+      "oauth2_authorize": {
+        "description": "Please log in to your Navimow account via browser."
+      },
+      "user": {
+        "title": "Navimow",
+        "description": "Set up Navimow integration"
+      }
+    },
+    "error": {
+      "authorization_failed": "Authorization failed, please try again",
+      "token_exchange_failed": "Token exchange failed",
+      "callback_failed": "Callback handling failed",
+      "cannot_connect": "Cannot connect to Navimow service",
+      "invalid_auth": "Authentication failed",
+      "unknown": "Unknown error"
+    },
+    "abort": {
+      "single_instance_allowed": "Only one Navimow instance can be added",
+      "already_configured": "Navimow is already configured",
+      "reauth_successful": "Re-authentication successful",
+      "missing_config": "Missing CLIENT_ID or CLIENT_SECRET"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Navimow Options",
+        "description": "Configure Navimow integration options"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "battery": {
+        "name": "Battery"
+      }
+    },
+    "device_tracker": {
+      "mower_location": {
+        "name": "Location"
+      }
+    }
+  }
+}
