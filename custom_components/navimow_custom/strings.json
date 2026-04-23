@@ -47,6 +47,11 @@
         "name": "Heading"
       }
     },
+    "button": {
+      "force_refresh": {
+        "name": "Force Refresh"
+      }
+    },
     "device_tracker": {
       "mower_location": {
         "name": "Location"

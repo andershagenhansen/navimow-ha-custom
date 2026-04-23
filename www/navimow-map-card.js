@@ -17,7 +17,7 @@
  * Find dock coordinates: open maps.google.com, right-click the dock spot → copy the coordinates.
  */
 
-const _V = "6"; // increment to bust browser cache
+const _V = "7"; // increment to bust browser cache
 
 const TILES = {
   satellite: {
@@ -245,13 +245,22 @@ class NavimowMapCard extends HTMLElement {
     if (!mapEl) return;
 
     const state = this._hass?.states[this._config.entity];
-    const lat = parseFloat(state?.attributes?.latitude);
-    const lng = parseFloat(state?.attributes?.longitude);
+    const dLat = this._config.dock_lat;
+    const dLon = this._config.dock_lon;
+    const px0 = parseFloat(state?.attributes?.posture_x);
+    const py0 = parseFloat(state?.attributes?.posture_y);
+    let lat, lng;
+    if (dLat != null && dLon != null && !isNaN(px0) && !isNaN(py0)) {
+      [lat, lng] = xyToLatLon(px0, py0, dLat, dLon);
+    } else {
+      lat = parseFloat(state?.attributes?.latitude);
+      lng = parseFloat(state?.attributes?.longitude);
+    }
 
     // Center priority: dock config → entity position → HA home
     let center;
-    if (this._config.dock_lat && this._config.dock_lon) {
-      center = [this._config.dock_lat, this._config.dock_lon];
+    if (dLat && dLon) {
+      center = [dLat, dLon];
     } else if (!isNaN(lat) && !isNaN(lng)) {
       center = [lat, lng];
     } else {
@@ -370,6 +379,9 @@ class NavimowMapCard extends HTMLElement {
           if (dLat != null && dLon != null && !isNaN(px) && !isNaN(py)) {
             return xyToLatLon(px, py, dLat, dLon);
           }
+          // When dock is configured, skip records without posture_x/y — their
+          // lat/lon was calculated from the HA-home origin and would misalign.
+          if (dLat != null && dLon != null) return [NaN, NaN];
           const la = parseFloat(s.a?.latitude);
           const lo = parseFloat(s.a?.longitude);
           return [la, lo];

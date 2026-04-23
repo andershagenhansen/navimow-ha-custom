@@ -29,6 +29,7 @@ from .services import async_setup_services
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [
+    Platform.BUTTON,
     Platform.LAWN_MOWER,
     Platform.SENSOR,
     Platform.DEVICE_TRACKER,
