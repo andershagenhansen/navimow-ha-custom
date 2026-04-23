@@ -208,6 +208,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             mqtt.on_disconnected = _on_disconnected
             mqtt.on_message = _on_message
 
+            # If MQTT already connected before hooks were installed, subscribe now
+            if mqtt.is_connected:
+                hass.async_create_task(_on_ready())
+
             def _on_subscribe(_client, _userdata, mid, granted_qos, *args, **kwargs):
                 _LOGGER.debug(
                     "MQTT subscribed: mid=%s granted_qos=%s", mid, granted_qos
