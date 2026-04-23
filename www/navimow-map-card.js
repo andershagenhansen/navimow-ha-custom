@@ -17,7 +17,7 @@
  * Find dock coordinates: open maps.google.com, right-click the dock spot → copy the coordinates.
  */
 
-const _V = "7"; // increment to bust browser cache
+const _V = "8"; // increment to bust browser cache
 
 const TILES = {
   satellite: {
@@ -115,13 +115,15 @@ class NavimowMapCard extends HTMLElement {
 
     let lat, lng;
 
-    // If dock position configured + raw posture attributes available → precise conversion
     const dLat = this._config.dock_lat;
     const dLon = this._config.dock_lon;
     const px = parseFloat(state.attributes.posture_x);
     const py = parseFloat(state.attributes.posture_y);
     if (dLat != null && dLon != null && !isNaN(px) && !isNaN(py)) {
       [lat, lng] = xyToLatLon(px, py, dLat, dLon);
+    } else if (dLat != null && dLon != null) {
+      // No posture data yet — assume mower is in the dock
+      [lat, lng] = [dLat, dLon];
     } else {
       lat = parseFloat(state.attributes.latitude);
       lng = parseFloat(state.attributes.longitude);
@@ -252,6 +254,9 @@ class NavimowMapCard extends HTMLElement {
     let lat, lng;
     if (dLat != null && dLon != null && !isNaN(px0) && !isNaN(py0)) {
       [lat, lng] = xyToLatLon(px0, py0, dLat, dLon);
+    } else if (dLat != null && dLon != null) {
+      // No posture data yet — assume mower is in the dock
+      [lat, lng] = [dLat, dLon];
     } else {
       lat = parseFloat(state?.attributes?.latitude);
       lng = parseFloat(state?.attributes?.longitude);
